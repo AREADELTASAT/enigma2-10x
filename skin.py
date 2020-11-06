@@ -226,20 +226,24 @@ class SkinError(Exception):
 #         e      : Take the parent size/width.
 #         c      : Take the center point of parent size/width.
 #         %      : Take given percentage of parent size/width.
-#         w      : Multiply by current font width.
-#         h      : Multiply by current font height.
+#         w      : Multiply by current font width. (Only to be used in elements where the font attribute is available, i.e. not "None")
+#         h      : Multiply by current font height. (Only to be used in elements where the font attribute is available, i.e. not "None")
+#         f      : Replace with getSkinFactor().
 #
 def parseCoordinate(s, e, size=0, font=None):
-	s = s.strip()
+	orig = s = s.strip()
 	if s == "center":  # For speed as this can be common case.
-		val = 0 if not size else (e - size) / 2
+		val = 0 if not size else (e - size) // 2
 	elif s == "*":
 		return None
 	else:
 		try:
 			val = int(s)  # For speed try a simple number first.
 		except ValueError:
-			if "t" in s:
+			if font is None and ("w" in s or "h" in s):
+				print("[Skin] Error: 'w' or 'h' is being used in a field where neither is valid. Input string: '%s'" % orig)
+				return 0
+			if "center" in s:
 				s = s.replace("center", str((e - size) / 2.0))
 			if "e" in s:
 				s = s.replace("e", str(e))
@@ -251,13 +255,17 @@ def parseCoordinate(s, e, size=0, font=None):
 				s = s.replace("h", "*%s" % str(fonts[font][2]))
 			if "%" in s:
 				s = s.replace("%", "*%s" % str(e / 100.0))
+			if "f" in s:
+				s = s.replace("f", str(getSkinFactor()))
 			try:
 				val = int(s)  # For speed try a simple number first.
 			except ValueError:
-				val = int(eval(s))
+				try:
+					val = int(eval(s))
+				except Exception as err:
+					print("[Skin] %s '%s': Coordinate '%s', processed to '%s', cannot be evaluated!" % (type(err).__name__, err, orig, s))
+					val = 0
 	# print("[Skin] DEBUG: parseCoordinate s='%s', e='%s', size=%s, font='%s', val='%s'." % (s, e, size, font, val))
-	if val < 0:
-		val = 0
 	return val
 
 def getParentSize(object, desktop):
@@ -296,6 +304,16 @@ def parseSize(s, scale, object=None, desktop=None):
 def parseFont(s, scale=((1, 1), (1, 1))):
 	if ";" in s:
 		name, size = s.split(";")
+		orig = size
+		try:
+			size = int(size)
+		except ValueError:
+			try:
+				size = size.replace("f", str(getSkinFactor()))
+				size = int(eval(size))
+			except Exception as err:
+				print("[Skin] %s '%s': font size formula '%s', processed to '%s', cannot be evaluated!" % (type(err).__name__, err, orig, s))
+				size = None
 	else:
 		name = s
 		size = None
@@ -987,14 +1005,26 @@ def readSkin(screen, skin, names, desktop):
 	for n in names:  # Try all skins, first existing one has priority.
 		myScreen, path = domScreens.get(n, (None, None))
 		if myScreen is not None:
-			name = n  # Use this name for debug output.
-			break
+			if screen.mandatoryWidgets is None:
+				screen.mandatoryWidgets = []
+			else:
+				widgets = findWidgets(n)
+			if screen.mandatoryWidgets == [] or all(item in widgets for item in screen.mandatoryWidgets):
+				name = n  # Use this name for debug output.
+				break
+			else:
+				print("[Skin] Warning: Skin screen '%s' rejected as it does not offer all the mandatory widgets '%s'!" % (n, ", ".join(screen.mandatoryWidgets)))
+				myScreen = None
 	else:
 		name = "<embedded-in-%s>" % screen.__class__.__name__
 	if myScreen is None:  # Otherwise try embedded skin.
 		myScreen = getattr(screen, "parsedSkin", None)
 	if myScreen is None and getattr(screen, "skin", None):  # Try uncompiled embedded skin.
-		skin = screen.skin
+		if isinstance(screen.skin, list):
+			print("[Skin] Resizable embedded skin template found in '%s'." % name)
+			skin = screen.skin[0] % tuple([int(x * getSkinFactor()) for x in screen.skin[1:]])
+		else:
+			skin = screen.skin
 		print("[Skin] Parsing embedded skin '%s'." % name)
 		if isinstance(skin, tuple):
 			for s in skin:
@@ -1197,6 +1227,31 @@ def readSkin(screen, skin, names, desktop):
 	# things around.
 	screen = None
 	usedComponents = None
+
+# Return a set of all the widgets found in a screen. Panels will be expanded
+# recursively until all referenced widgets are captured. This code only performs
+# a simple scan of the XML and no skin processing is performed.
+#
+def findWidgets(name):
+	widgetSet = set()
+	element, path = domScreens.get(name, (None, None))
+	if element is not None:
+		widgets = element.findall("widget")
+		if widgets is not None:
+			for widget in widgets:
+				name = widget.get("name", None)
+				if name is not None:
+					widgetSet.add(name)
+				source = widget.get("source", None)
+				if source is not None:
+					widgetSet.add(source)
+		panels = element.findall("panel")
+		if panels is not None:
+			for panel in panels:
+				name = panel.get("name", None)
+				if name:
+					widgetSet.update(findWidgets(name))
+	return widgetSet
 
 # Return a scaling factor (float) that can be used to rescale screen displays
 # to suit the current resolution of the screen.  The scales are based on a
