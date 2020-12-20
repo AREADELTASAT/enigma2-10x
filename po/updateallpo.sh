@@ -46,7 +46,7 @@ languages=($(gawk ' BEGIN { FS=" " }
 		} ' Makefile.am ))
 
 # If you want to define the language locally in this script uncomment and defined languages
-#languages=("en" "it")
+languages=("en" "it")
 
 #
 # Arguments to generate the pot and po files are not retrieved from the Makefile.
